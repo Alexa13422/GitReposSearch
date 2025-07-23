@@ -17,6 +17,7 @@ public class GithubController {
         this.githubService = githubService;
     }
 
+
     @GetMapping("/repos/{user}")
     public ResponseEntity<List<RepositoryDTO>> getAllRepositoriesNotForks(@PathVariable String user) {
         List<RepositoryDTO> repositoryDTOList = githubService.getAllRepositoriesNotForks(user);
