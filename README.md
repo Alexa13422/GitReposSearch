@@ -37,3 +37,29 @@ A simple Spring Boot (Java 21, Spring 3.5) service that lists **non-fork** repos
 
 ```bash
 ./gradlew bootRun
+```
+
+### GET `/api/repos/{username}`
+
+**Success – 200 OK**
+
+```json
+[
+  {
+    "name": "my-repo",
+    "owner": "octocat",
+    "branches": [
+      { "name": "main", "commit": "a1b2c3..." },
+      { "name": "dev",  "commit": "d4e5f6..." }
+    ]
+  },
+]
+```
+**User Not Found – 404 Not Found
+```JSON
+{
+  "status": 404,
+  "message": "GitHub user not found: {username}"
+}
+```
+
