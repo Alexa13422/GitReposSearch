@@ -1,5 +1,6 @@
 package org.example.gitrepossearch.service;
 
+import lombok.extern.slf4j.Slf4j;
 import org.example.gitrepossearch.dto.BranchDTO;
 import org.example.gitrepossearch.dto.RepositoryDTO;
 import org.example.gitrepossearch.exception.*;
@@ -13,18 +14,21 @@ import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.stream.Collectors;
 
+import static java.util.stream.Collectors.toList;
+
+
+@Slf4j
 @Service
 public class GithubService {
 
     @Value("${github.token}")
     private String githubToken;
-
     private final RestTemplate restTemplate;
     private final Executor executor;
 
@@ -36,63 +40,76 @@ public class GithubService {
                 .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer: " + githubToken)
                 .build();
     }
-    @Cacheable(value = "repos", key = "#user")
-    public List<RepositoryDTO> getAllRepositoriesNotForks(String user) {
-        if (user == null || user.isEmpty()) {
-            throw new UserNotFoundException(user + " cannot be empty");
-        }
 
-        String url = String.format("/users/%s/repos?per_page=100", user);
-        RepositoryDTO[] repos;
+    public List<RepositoryDTO> getAllRepositoriesNotForks(String user) {
+        validateUser(user);
+        
+        return getRepos(user)
+                .stream()
+                .filter(repo -> !repo.isFork())
+                .map(repo -> fetchBranchesAsync(user, repo))
+                .collect(toList());
+    }
+
+    private void validateUser(String user) {
+        if (user == null || user.isEmpty()) {
+            throw new UserNotFoundException("User cannot be null or empty");
+        }
+    }
+
+    private RepositoryDTO fetchBranchesAsync(String user, RepositoryDTO repo) {
         try {
-            ResponseEntity<RepositoryDTO[]> response =
-                    restTemplate.getForEntity(url, RepositoryDTO[].class);
-            repos = response.getBody();
-        } catch (HttpClientErrorException.NotFound e) {
-            throw new UserNotFoundException(user);
+            return CompletableFuture.supplyAsync(() -> {
+                List<BranchDTO> branches = getBranchesPerRepo(user, repo.getName());
+                repo.setBranches(branches);
+                return repo;
+            }, executor)
+            .join();
+        } catch (Exception e) {
+            log.error("Error fetching branches for repository: {}", repo.getName(), e);
+            throw new GitHubClientException();
+        }
+    }
+
+    @Cacheable(value = "repos", key = "#user", condition = "#user != null")
+    public List<RepositoryDTO> getRepos(String user) {
+        String url = String.format("/users/%s/repos?per_page=100", user);
+        
+        try {
+            ResponseEntity<RepositoryDTO[]> response = restTemplate.getForEntity(url, RepositoryDTO[].class);
+            RepositoryDTO[] repositories = response.getBody();
+            
+            if (repositories == null || repositories.length == 0) {
+                return List.of();
+            }
+            
+            return Arrays.stream(repositories)
+                    .collect(Collectors.toList());
+        } catch (HttpClientErrorException.NotFound ex) {
+                throw new UserNotFoundException(user);
         } catch (RestClientException ex) {
             throw new GitHubClientException();
         }
-
-        if (repos == null || repos.length == 0) {
-            return List.of();
-        }
-
-        List<CompletableFuture<RepositoryDTO>> futures = Arrays.stream(repos)
-                .filter(r -> !r.isFork())
-                .map(repo -> CompletableFuture.supplyAsync(() -> {
-                    List<BranchDTO> branches = getBranchesPerRepo(user, repo.getName());
-                    repo.setBranches(branches);
-                    return repo;
-                }, executor))
-                .toList();
-
-        return futures.stream()
-                .map(CompletableFuture::join)
-                .toList();
     }
 
     @Cacheable(value = "branches", key = "#user + ':' + #repo")
     public List<BranchDTO> getBranchesPerRepo(String user, String repo) {
-        List<BranchDTO> branches = new ArrayList<>();
-
-        String url = String.format(
-                "/repos/%s/%s/branches?per_page=100", user, repo);
-        ResponseEntity<BranchDTO[]> response;
-
+        String url = String.format("/repos/%s/%s/branches?per_page=100", user, repo);
+        
         try {
-            response = restTemplate.getForEntity(url, BranchDTO[].class);
-        } catch (HttpClientErrorException.NotFound e) {
-            throw new RepositoryNotFoundException(user, repo);
+            ResponseEntity<BranchDTO[]> response = restTemplate.getForEntity(url, BranchDTO[].class);
+            BranchDTO[] branches = response.getBody();
+            
+            if (branches == null) {
+                return List.of();
+            }
+            
+            return Arrays.stream(branches)
+                    .collect(Collectors.toList());
+        } catch (HttpClientErrorException.NotFound ex) {
+                throw new RepositoryNotFoundException(user, repo);
         } catch (RestClientException ex) {
             throw new GitHubClientException();
         }
-
-        BranchDTO[] branchesResponse = response.getBody();
-        if (branchesResponse != null && branchesResponse.length != 0) {
-            branches.addAll(Arrays.asList(branchesResponse));
-        }
-        return branches;
-
     }
 }
